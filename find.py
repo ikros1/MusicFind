@@ -2,7 +2,9 @@ import os
 import numpy as np
 import librosa
 from sklearn.metrics.pairwise import cosine_similarity
-
+import threading
+from queue import Queue, Empty
+from concurrent.futures import ThreadPoolExecutor
 
 def extract_mfcc_features(file_path):
     try:
@@ -19,17 +21,42 @@ def extract_mfcc_features(file_path):
 def scan_directory_for_music_files(directory):
     supported_formats = ('.mp3', '.wav', '.ogg', '.flac')
     features_dict = {}
+    file_list_queue = Queue()
+    lock = threading.Lock()
+    
+    # 遍历目录，将符合条件的文件路径加入队列
     for root, _, files in os.walk(directory):
         for file in files:
-            if file.lower().endswith(supported_formats):
+            if any(file.lower().endswith(fmt) for fmt in supported_formats):
                 file_path = os.path.join(root, file)
-                mfccs = extract_mfcc_features(file_path)
-                if mfccs is not None:
+                file_list_queue.put(file_path)
+    
+    # 定义线程工作函数
+    def worker():
+        while True:
+            try:
+                file_path = file_list_queue.get_nowait()
+            except Empty:
+                break
+            mfccs = extract_mfcc_features(file_path)
+            if mfccs is not None:
+                with lock:
                     features_dict[file_path] = mfccs
+            file_list_queue.task_done()
+    
+    # 使用 ThreadPoolExecutor 来管理线程池
+    with ThreadPoolExecutor(max_workers=80) as executor:
+        # 提交所有工作线程
+        for _ in range(80):
+            executor.submit(worker)
+        
+        # 等待所有文件处理完毕
+        file_list_queue.join()
+    
     return features_dict
 
 
-def find_similar_audios(features_dict, threshold=0.9998, top_n=5):
+def find_similar_audios(features_dict, threshold=0.9999, top_n=5):
     if not features_dict:
         print("No features to compare.")
         return []
@@ -59,7 +86,7 @@ def find_similar_audios(features_dict, threshold=0.9998, top_n=5):
 
 
 def main():
-    directory_path = 'path'
+    directory_path = 'path/'
     features_dict = scan_directory_for_music_files(directory_path)
     similar_audios = find_similar_audios(features_dict)
 
